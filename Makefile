@@ -2,7 +2,7 @@
 # When processing the rules for tagging and pushing container images with the
 # "latest" tag, the following variable will be the version that is considered
 # to be the latest.
-LATEST_VERSION=17-3.5
+LATEST_VERSION=18-3.6
 
 # The following flags are set based on VERSION and VARIANT environment variables
 # that may have been specified, and are used by rules to determine which
@@ -10,6 +10,14 @@ LATEST_VERSION=17-3.5
 # variables were specified, process everything (the default).
 do_default=true
 do_alpine=true
+
+ifdef VARIANT
+    ifneq ($(VARIANT),default)
+    ifneq ($(VARIANT),alpine)
+        $(error VARIANT must be either default or alpine)
+    endif
+    endif
+endif
 
 # The following logic evaluates VERSION and VARIANT variables that may have
 # been previously specified, and modifies the "do" flags depending on the values.
@@ -33,6 +41,10 @@ else # If no version was specified, VERSIONS should contain all versions
     VERSIONS = $(foreach df,$(wildcard */Dockerfile),$(df:%/Dockerfile=%))
 endif
 
+COPY_SCRIPT_DIRS = \
+	$(if $(filter true,$(do_default)),$(VERSIONS)) \
+	$(if $(filter true,$(do_alpine)),$(addsuffix /alpine,$(VERSIONS)))
+
 # The "latest" tag will only be provided for default images (no variant) so
 # only define the dependencies when the default image will be built.
 ifeq ($(do_default),true)
@@ -50,39 +62,51 @@ ifeq ($(do_default),true)
     endif
 endif
 
-# The repository and image names default to the official but can be overriden
+# The repository and image names default to the official but can be overridden
 # via environment variables.
 REPO_NAME  ?= postgis
 IMAGE_NAME ?= postgis
 
 DOCKER=docker
-DOCKERHUB_DESC_IMG=peterevans/dockerhub-description:4
+DOCKERHUB_DESC_IMG=docker.io/peterevans/dockerhub-description@sha256:47a20f4f099a423d67548823c982fdbece156ff7292c754a257e4f04073c0800
 
 GIT=git
 OFFIMG_LOCAL_CLONE=$(HOME)/official-images
 OFFIMG_REPO_URL=https://github.com/docker-library/official-images.git
 
 
-build: $(foreach version,$(VERSIONS),build-$(version))
+build: copy-scripts $(foreach version,$(VERSIONS),build-$(version))
 
-all: update build test
+copy-scripts:
+	@for directory in $(COPY_SCRIPT_DIRS); do \
+		if [ -d "$$directory" ]; then \
+			cp -p initdb-postgis.sh update-postgis.sh "$$directory/"; \
+		fi; \
+	done
+
+all: update
+	+$(MAKE) build test
 
 update:
-	$(DOCKER) run --rm -v $$(pwd):/work -w /work docker.io/buildpack-deps ./update.sh
+	$(DOCKER) run --rm -v "$(CURDIR):/work" -w /work docker.io/buildpack-deps ./update.sh
 
 
 ### RULES FOR BUILDING ###
 
 define build-version
-build-$1:
+build-$1: copy-scripts
 ifeq ($(do_default),true)
-	$(DOCKER) build --pull -t $(REPO_NAME)/$(IMAGE_NAME):$(shell echo $1) $1
-	$(DOCKER) images          $(REPO_NAME)/$(IMAGE_NAME):$(shell echo $1)
+	@if grep -Fq 'placeholder Dockerfile' "$1/Dockerfile"; then \
+		echo "Skipping unavailable Debian image: $1"; \
+	else \
+		$(DOCKER) build --pull -t $(REPO_NAME)/$(IMAGE_NAME):$1 $1; \
+		$(DOCKER) images          $(REPO_NAME)/$(IMAGE_NAME):$1; \
+	fi
 endif
 ifeq ($(do_alpine),true)
 ifneq ("$(wildcard $1/alpine)","")
-	$(DOCKER) build --pull -t $(REPO_NAME)/$(IMAGE_NAME):$(shell echo $1)-alpine $1/alpine
-	$(DOCKER) images          $(REPO_NAME)/$(IMAGE_NAME):$(shell echo $1)-alpine
+	$(DOCKER) build --pull -t $(REPO_NAME)/$(IMAGE_NAME):$1-alpine $1/alpine
+	$(DOCKER) images          $(REPO_NAME)/$(IMAGE_NAME):$1-alpine
 endif
 endif
 endef
@@ -93,19 +117,31 @@ $(foreach version,$(VERSIONS),$(eval $(call build-version,$(version))))
 
 test-prepare:
 ifeq ("$(wildcard $(OFFIMG_LOCAL_CLONE))","")
-	$(GIT) clone $(OFFIMG_REPO_URL) $(OFFIMG_LOCAL_CLONE)
+	@for attempt in 1 2 3; do \
+		if $(GIT) -c http.maxRetries=5 -c http.retryDelay=2 clone --quiet --depth 1 $(OFFIMG_REPO_URL) $(OFFIMG_LOCAL_CLONE); then \
+			exit 0; \
+		fi; \
+		rm -rf "$(OFFIMG_LOCAL_CLONE)"; \
+		echo "official-images clone failed (attempt $$attempt/3); retrying" >&2; \
+		sleep $$((attempt * 5)); \
+	done; \
+	exit 1
 endif
 
-test: $(foreach version,$(VERSIONS),test-$(version))
+test: copy-scripts $(foreach version,$(VERSIONS),test-$(version))
 
 define test-version
 test-$1: test-prepare build-$1
 ifeq ($(do_default),true)
-	$(OFFIMG_LOCAL_CLONE)/test/run.sh -c $(OFFIMG_LOCAL_CLONE)/test/config.sh -c test/postgis-config.sh $(REPO_NAME)/$(IMAGE_NAME):$(version)
+	@if grep -Fq 'placeholder Dockerfile' "$1/Dockerfile"; then \
+		echo "Skipping unavailable Debian test image: $1"; \
+	else \
+		$(OFFIMG_LOCAL_CLONE)/test/run.sh -c $(OFFIMG_LOCAL_CLONE)/test/config.sh -c test/postgis-config.sh $(REPO_NAME)/$(IMAGE_NAME):$1; \
+	fi
 endif
 ifeq ($(do_alpine),true)
 ifneq ("$(wildcard $1/alpine)","")
-	$(OFFIMG_LOCAL_CLONE)/test/run.sh -c $(OFFIMG_LOCAL_CLONE)/test/config.sh -c test/postgis-config.sh $(REPO_NAME)/$(IMAGE_NAME):$(version)-alpine
+	$(OFFIMG_LOCAL_CLONE)/test/run.sh -c $(OFFIMG_LOCAL_CLONE)/test/config.sh -c test/postgis-config.sh $(REPO_NAME)/$(IMAGE_NAME):$1-alpine
 endif
 endif
 endef
@@ -125,11 +161,15 @@ push: $(foreach version,$(VERSIONS),push-$(version)) $(PUSH_DEP)
 define push-version
 push-$1: test-$1
 ifeq ($(do_default),true)
-	$(DOCKER) image push $(REPO_NAME)/$(IMAGE_NAME):$(version)
+	@if grep -Fq 'placeholder Dockerfile' "$1/Dockerfile"; then \
+		echo "Skipping unavailable Debian push: $1"; \
+	else \
+		$(DOCKER) image push $(REPO_NAME)/$(IMAGE_NAME):$1; \
+	fi
 endif
 ifeq ($(do_alpine),true)
 ifneq ("$(wildcard $1/alpine)","")
-	$(DOCKER) image push $(REPO_NAME)/$(IMAGE_NAME):$(version)-alpine
+	$(DOCKER) image push $(REPO_NAME)/$(IMAGE_NAME):$1-alpine
 endif
 endif
 endef
@@ -137,15 +177,14 @@ $(foreach version,$(VERSIONS),$(eval $(call push-version,$(version))))
 
 push-latest: tag-latest $(PUSH_LATEST_DEP)
 	$(DOCKER) image push $(REPO_NAME)/$(IMAGE_NAME):latest
-	@$(DOCKER) run -v "$(PWD)":/workspace \
+	@$(DOCKER) run -v "$(CURDIR):/workspace" \
                       -e DOCKERHUB_USERNAME='$(DOCKERHUB_USERNAME)' \
                       -e DOCKERHUB_PASSWORD='$(DOCKERHUB_ACCESS_TOKEN)' \
                       -e DOCKERHUB_REPOSITORY='$(REPO_NAME)/$(IMAGE_NAME)' \
                       -e README_FILEPATH='/workspace/README.md' $(DOCKERHUB_DESC_IMG)
 
 
-.PHONY: build all update test-prepare test tag-latest push push-latest \
+.PHONY: build all copy-scripts update test-prepare test tag-latest push push-latest \
         $(foreach version,$(VERSIONS),build-$(version)) \
         $(foreach version,$(VERSIONS),test-$(version)) \
         $(foreach version,$(VERSIONS),push-$(version))
-
