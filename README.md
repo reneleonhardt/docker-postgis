@@ -299,7 +299,7 @@ For more details, you can read [this article](https://pythonspeed.com/articles/d
 
 Unfortunately, we don't have control over updates to Debian and Alpine distributions or the upstream `postgres` image.
 Because of this, there might be some issues that we cannot fix right away.
-On the positive side, the `postgis/postgis` images are regenerated every Monday. This process is to ensure they include the latest changes and improvements. As a result, these images are consistently kept up-to-date.
+Each Monday, CI checks for changed build inputs and newer upstream PostgreSQL images, then rebuilds affected eligible tags. If the update or registry metadata check fails, CI rebuilds all eligible tags.
 
 ## Suggestions Welcome
 
