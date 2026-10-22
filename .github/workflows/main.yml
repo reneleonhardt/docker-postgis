@@ -1,10 +1,7 @@
 name: Docker PostGIS CI
 
 on:
-  push:
-  pull_request:
-  schedule:
-    - cron: '15 5 * * 1'
+  workflow_dispatch:
 
 defaults:
   run:
@@ -16,15 +13,15 @@ jobs:
     strategy:
       matrix:
         runner-platform: ['ubuntu-24.04', 'ubuntu-24.04-arm']
-        postgres: [14, 15, 16, 17]
-        postgis: ['3.5']
+        postgres: [14, 15, 16, 17, 18, 19rc1]
+        postgis: ['3.6']
         variant: [default, alpine]
         include:
           - postgres: 16
             postgis: master
             variant: default
             runner-platform: 'ubuntu-24.04'
-          - postgres: 19beta1
+          - postgres: 17
             postgis: master
             variant: default
             runner-platform: 'ubuntu-24.04'
@@ -32,71 +29,61 @@ jobs:
             postgis: master
             variant: default
             runner-platform: 'ubuntu-24.04'
-          - postgres: 17
+          - postgres: 19rc1
             postgis: master
             variant: default
             runner-platform: 'ubuntu-24.04'
-          - postgres: 19beta1
+          - postgres: 16
             postgis: master
             variant: default
+            runner-platform: 'ubuntu-24.04-arm'
+          - postgres: 17
+            postgis: master
+            variant: default
+            runner-platform: 'ubuntu-24.04-arm'
+          - postgres: 18
+            postgis: master
+            variant: default
+            runner-platform: 'ubuntu-24.04-arm'
+          - postgres: 19rc1
+            postgis: master
+            variant: default
+            runner-platform: 'ubuntu-24.04-arm'
+          - postgres: 19rc1
+            postgis: '3.7.0rc3'
+            version: 19rc1-3.7
+            variant: alpine
+            runner-platform: 'ubuntu-24.04'
+          - postgres: 19rc1
+            postgis: '3.7.0rc3'
+            version: 19rc1-3.7
+            variant: alpine
             runner-platform: 'ubuntu-24.04-arm'
 
           - postgres: 18
-            postgis: master
-            variant: default
-            runner-platform: 'ubuntu-24.04-arm'
-          - postgres: 17
-            postgis: master
-            variant: default
-            runner-platform: 'ubuntu-24.04-arm'
-          - postgres: 17
-            postgis: '3.6'
-            variant: alpine
-            runner-platform: 'ubuntu-24.04'
-          - postgres: 17
-            postgis: '3.6'
-            variant: alpine
-            runner-platform: 'ubuntu-24.04-arm'
-          - postgres: 18
-            postgis: '3.6'
+            postgis: '3.7.0rc3'
+            version: 18-3.7
             variant: alpine
             runner-platform: 'ubuntu-24.04'
           - postgres: 18
-            postgis: '3.6'
+            postgis: '3.7.0rc3'
+            version: 18-3.7
             variant: alpine
-            runner-platform: 'ubuntu-24.04-arm'
-          - postgres: 18
-            postgis: '3.6'
-            variant: default
-            runner-platform: 'ubuntu-24.04'
-          - postgres: 18
-            postgis: '3.6'
-            variant: default
-            runner-platform: 'ubuntu-24.04-arm'
-          - postgres: 19beta1
-            postgis: '3.6'
-            variant: alpine
-            runner-platform: 'ubuntu-24.04'
-          - postgres: 19beta1
-            postgis: '3.6'
-            variant: alpine
-            runner-platform: 'ubuntu-24.04-arm'
-          - postgres: 19beta1
-            postgis: '3.6'
-            variant: default
-            runner-platform: 'ubuntu-24.04'
-          - postgres: 19beta1
-            postgis: '3.6'
-            variant: default
             runner-platform: 'ubuntu-24.04-arm'
 
     name: ${{ matrix.postgres }}-${{ matrix.postgis }}-${{ matrix.variant }} ${{ matrix.runner-platform }} - Build Docker image
     runs-on: ${{ matrix.runner-platform }}
-    continue-on-error: ${{ matrix.postgis == 'master' }}
+    # Non-stable builds (PostGIS master, any alpha/beta/rc of PostgreSQL or PostGIS) must not fail the workflow.
+    # Note: env is not available here, and contains() is a case-insensitive substring match.
+    continue-on-error: >-
+      ${{ matrix.postgis == 'master'
+          || contains(format('{0}-{1}', matrix.postgres, matrix.postgis), 'alpha')
+          || contains(format('{0}-{1}', matrix.postgres, matrix.postgis), 'beta')
+          || contains(format('{0}-{1}', matrix.postgres, matrix.postgis), 'rc') }}
     env:
-      VERSION: ${{ matrix.postgres }}-${{ matrix.postgis }}
+      VERSION: ${{ matrix.version || format('{0}-{1}', matrix.postgres, matrix.postgis) }}
       VARIANT: ${{ matrix.variant }}
-      DOCKER_APT_PKG_VER: '5:29.2.1-1~ubuntu.24.04~noble'
+      DOCKER_APT_PKG_VER: '5:29.8.2-1~ubuntu.24.04~noble'
 
     steps:
     - name: Install/config specific version of Docker packages
@@ -107,7 +94,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install ca-certificates curl
         sudo install -m 0755 -d /etc/apt/keyrings
-        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        sudo curl --fail --silent --show-error --location --retry 5 --retry-delay 2 --retry-connrefused https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
         sudo chmod a+r /etc/apt/keyrings/docker.asc
         echo \
           "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
@@ -144,13 +131,13 @@ jobs:
         docker images --tree
 
     - name: Checkout source
-      uses: actions/checkout@v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Build docker image for ${{ env.VERSION }} ${{ env.VARIANT }}
       run: make test
 
     - name: Login to dockerhub
-      uses: docker/login-action@v3
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       if: ${{ (github.repository == 'postgis/docker-postgis') && (github.ref == 'refs/heads/master') && (github.event_name != 'pull_request') }}
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
