@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - feat/multi-platform-CI
   pull_request:
   schedule:
     - cron: '15 5 * * 1'
@@ -296,7 +297,9 @@ jobs:
                   print("Scheduled rebuild: shared build inputs changed; rebuilding all eligible tags", file=sys.stderr)
               return stale
 
-          if event_name == "push" and ref == "refs/heads/master":
+          if event_name in ("push", "workflow_dispatch") and ref == "refs/heads/feat/multi-platform-CI":
+              selected.update(target for target in all_targets if not target[0].endswith("-master"))
+          elif event_name == "push" and ref == "refs/heads/master":
               for version in dockerfiles:
                   if version.endswith("-master"):
                       add_target(version, "default")

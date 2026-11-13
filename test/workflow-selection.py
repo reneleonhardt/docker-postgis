@@ -44,6 +44,12 @@ assert push["latest_version"] == "18-3.7"
 assert targets and all(version.endswith("-master") for version, _ in targets)
 
 dispatch, targets = select("workflow_dispatch")
+ci_push, ci_targets = select("push", REF="refs/heads/feat/multi-platform-CI")
+assert ci_targets == {target for target in targets if not target[0].endswith("-master")}
+assert ci_push["has_master_images"] == "false"
+assert len(json.loads(ci_push["matrix"])["include"]) == 2 * len(ci_targets)
+_, ci_dispatch = select("workflow_dispatch", REF="refs/heads/feat/multi-platform-CI")
+assert ci_dispatch == ci_targets
 assert {("19rc2-3.7", "default"), ("19rc2-3.7", "alpine")} <= targets
 experimental = {(item["version"], item["variant"]): item["experimental"] for item in json.loads(dispatch["images"])["include"]}
 assert not experimental["18-3.7", "default"] and not experimental["18-3.7", "alpine"]
