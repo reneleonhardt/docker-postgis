@@ -7,6 +7,9 @@ defaults:
   run:
     shell: bash
 
+permissions:
+  contents: read
+
 jobs:
 
   versions:
@@ -15,6 +18,8 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: matrix
         run: |
           python3 - <<'PYTHON' >> "$GITHUB_OUTPUT"
@@ -69,8 +74,6 @@ jobs:
         sudo apt policy docker-ce
         echo "***** Installing Docker packages..."
         sudo apt-get install docker-ce=${{ env.DOCKER_APT_PKG_VER }} docker-ce-cli=${{ env.DOCKER_APT_PKG_VER }} containerd.io docker-buildx-plugin docker-compose-plugin
-        echo "***** Verifying initial Docker installation..."
-        docker run hello-world
         echo "***** Displaying Docker information..."
         docker info
         echo "***** Configuring Docker for containerd image store and builder keepStorage..."
@@ -89,13 +92,10 @@ jobs:
         sudo systemctl restart docker
         docker info -f '{{ .DriverStatus }}'
 
-    - name: Load binfmt platforms for QEMU
-      run: |
-        docker run --privileged --rm tonistiigi/binfmt --install all
-        docker images --tree
-
     - name: Checkout source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
 
     - name: Check base image platform for ${{ env.VERSION }} ${{ env.VARIANT }}
       # Docker silently falls back to a "compatible" platform (e.g. linux/arm/v7 on an arm64 host)
@@ -108,4 +108,4 @@ jobs:
         fi
 
     - name: Build docker image for ${{ env.VERSION }} ${{ env.VARIANT }}
-      run: make test
+      run: nice -n 10 make test OFFIMG_LOCAL_CLONE="$RUNNER_TEMP/official-images"

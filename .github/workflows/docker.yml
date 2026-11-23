@@ -29,7 +29,11 @@ defaults:
 
 permissions:
   contents: read
-  actions: read
+
+env:
+  BUILDX_VERSION: v0.39.1
+  BUILDKIT_IMAGE: docker.io/moby/buildkit:buildx-stable-1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
+  SBOM_GENERATOR: docker.io/docker/buildkit-syft-scanner:stable-1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
 
 # Rebuild tags when their inputs change or their PostgreSQL base is newer.
 # Stop scheduled releases when update or registry metadata is unavailable.
@@ -39,6 +43,9 @@ jobs:
   versions:
     name: Discover Docker image versions
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: postgis-discovery-${{ github.event_name == 'schedule' && github.ref || github.run_id }}
       cancel-in-progress: false
@@ -53,6 +60,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Run local regression tests
         run: |
           nice -n 10 bash test/update-warnings.sh
@@ -513,6 +521,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release') }}
         name: Download generated Dockerfile updates
@@ -533,7 +543,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          driver-opts: image=moby/buildkit:buildx-stable-1
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       - name: Build shared master dependency stage
         id: bake
@@ -580,6 +591,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release') }}
         name: Download generated Dockerfile updates
@@ -605,7 +618,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          driver-opts: image=moby/buildkit:buildx-stable-1
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       - name: Build native image with attestations
         id: bake
@@ -617,7 +631,7 @@ jobs:
           targets: image
           pull: true
           provenance: mode=max
-          sbom: true
+          sbom: generator=${{ env.SBOM_GENERATOR }}
           set: |
             image.platform=${{ matrix.platform }}
             image.tags=${{ env.EXPECTED_TAG }}
@@ -629,7 +643,7 @@ jobs:
           for attempt in 1 2 3; do
             if docker buildx bake --allow fs=* --file docker-bake.hcl --set image.platform=${{ matrix.platform }} \
               --set "image.tags=$EXPECTED_TAG" --set "image.output=type=oci,dest=$OCI_LAYOUT" \
-              --pull --provenance=mode=max --sbom=true image; then
+              --pull --provenance=mode=max --sbom="generator=$SBOM_GENERATOR" image; then
               exit 0
             fi
             echo "Bake failed (attempt ${attempt}/3); retrying" >&2
@@ -645,22 +659,10 @@ jobs:
 
       - name: Run official-images tests
         run: |
-          if [[ ! -d "$HOME/official-images" ]]; then
-            for attempt in 1 2 3; do
-              if git -c http.maxRetries=5 -c http.retryDelay=2 clone --quiet --depth 1 https://github.com/docker-library/official-images.git "$HOME/official-images"; then
-                break
-              fi
-              rm -rf "$HOME/official-images"
-              echo "official-images clone failed (attempt ${attempt}/3); retrying" >&2
-              sleep $((attempt * 5))
-            done
-          fi
-          if [[ ! -x "$HOME/official-images/test/run.sh" ]]; then
-            echo "official-images clone did not produce test/run.sh" >&2
-            exit 1
-          fi
-          "$HOME/official-images/test/run.sh" \
-            -c "$HOME/official-images/test/config.sh" \
+          tests="$RUNNER_TEMP/official-images"
+          make test-prepare OFFIMG_LOCAL_CLONE="$tests"
+          "$tests/test/run.sh" \
+            -c "$tests/test/config.sh" \
             -c test/postgis-config.sh \
             "$EXPECTED_TAG"
 
@@ -754,6 +756,8 @@ jobs:
     steps:
       - name: Checkout policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Require configured protection for releases
         if: ${{ github.repository == 'postgis/docker-postgis' && (github.event_name == 'schedule' || (github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release')))) }}
         env:
@@ -784,6 +788,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release') }}
         name: Download generated Dockerfile updates
@@ -804,7 +810,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          driver-opts: image=moby/buildkit:buildx-stable-1
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       - name: Download tested OCI images
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -870,25 +877,29 @@ jobs:
           fi
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
 
-      - name: Update Docker Hub description
+      - name: Check Docker Hub description credentials
+        id: description-credentials
         if: ${{ matrix.version == env.LATEST_VERSION && matrix.variant == 'default' }}
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_ACCESS_TOKEN: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
         run: |
-          for attempt in 1 2 3; do
-            if docker run --rm -v "$GITHUB_WORKSPACE":/workspace \
-              -e DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" \
-              -e DOCKERHUB_PASSWORD="$DOCKERHUB_ACCESS_TOKEN" \
-              -e DOCKERHUB_REPOSITORY="$DOCKERHUB_REPOSITORY" \
-              -e README_FILEPATH=/workspace/README.md \
-              docker.io/peterevans/dockerhub-description:5; then
-              exit 0
-            fi
-            echo "Docker Hub description update failed (attempt ${attempt}/3); retrying" >&2
-            sleep $((attempt * 5))
-          done
-          exit 1
+          if [[ -z "$DOCKERHUB_USERNAME" && -z "$DOCKERHUB_ACCESS_TOKEN" ]]; then
+            exit 0
+          fi
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_ACCESS_TOKEN" ]]; then
+            echo "Set both Docker Hub description credentials or remove both to skip the update." >&2
+            exit 1
+          fi
+          echo 'configured=true' >> "$GITHUB_OUTPUT"
+
+      - name: Update Docker Hub description
+        if: steps.description-credentials.outputs.configured == 'true'
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+          repository: ${{ env.DOCKERHUB_REPOSITORY }}
 
   verify-published:
     name: Verify published ${{ matrix.version }}-${{ matrix.variant }}
