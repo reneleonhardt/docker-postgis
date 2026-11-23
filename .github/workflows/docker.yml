@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - feat/multi-platform-CI
   pull_request:
   schedule:
     - cron: '15 5 * * *'
@@ -336,6 +337,10 @@ jobs:
                   if version.endswith("-master"):
                       add_target(version, "default")
                       add_target(version, "alpine")
+          elif event_name in ("push", "workflow_dispatch") and ref == "refs/heads/feat/multi-platform-CI":
+              if event_name == "workflow_dispatch" and os.environ.get("DISPATCH_MODE") == "release":
+                  raise SystemExit("The temporary CI branch only runs tests")
+              selected.update({("19-3.7", "default"), ("19-3.7", "alpine")})
           elif event_name == "schedule":
               if os.environ.get("UPDATE_SCRIPT_OUTCOME") != "success":
                   raise SystemExit("update.sh failed; no release candidates selected")
